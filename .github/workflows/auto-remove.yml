@@ -1,0 +1,64 @@
+name: Author self-removal
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: ['marketplace/manifests/**', 'marketplace/images/**']
+  workflow_dispatch:
+    inputs:
+      pull_number:
+        description: 'Existing author removal PR number'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  author-removal:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: marketplace-index
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify original publisher and exact removal scope
+        id: removal
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = require(process.env.GITHUB_WORKSPACE + '/.github/scripts/auto-remove.cjs');
+            await run({github, context, core});
+      # A GITHUB_TOKEN merge does not start the push workflow. Rebuild explicitly
+      # in this same trusted job, against fresh main, so the index cannot remain stale.
+      - uses: actions/checkout@v4
+        if: steps.removal.outputs.merged == 'true'
+        with:
+          ref: main
+      - uses: actions/setup-dotnet@v4
+        if: steps.removal.outputs.merged == 'true'
+        with:
+          dotnet-version: '10.0.x'
+      - name: Rebuild catalogue after removal
+        if: steps.removal.outputs.merged == 'true'
+        shell: pwsh
+        run: |
+          dotnet restore .github/tools/MarketplaceCatalog --source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE -ne 0) { throw 'Restore failed.' }
+          dotnet run --project .github/tools/MarketplaceCatalog --no-restore -- build .
+          if ($LASTEXITCODE -ne 0) { throw 'Catalogue validation failed.' }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- marketplace/index.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) { exit 0 }
+          git commit -m 'Update catalogue after author removal'
+          if ($LASTEXITCODE -ne 0) { throw 'Catalogue commit failed.' }
+          git push origin HEAD:main
+          if ($LASTEXITCODE -ne 0) { throw 'Push failed; rerun Marketplace catalogue against main.' }
