@@ -1,4 +1,4 @@
-﻿using RimWise.Integration.Marketplace;
+using RimWise.Integration.Marketplace;
 using RimWise.Integration.Safety;
 
 // Run this trusted tool from the base branch in CI. Author branches supply JSON
@@ -11,6 +11,7 @@ try
     if (args[0] == "build")
     {
         var manifests = ReadManifests(root);
+        _ = ReadImages(root, manifests);
         var catalogue = Catalogue(manifests);
         var index = ScopedPaths.Ordinary(Path.Combine(root, "marketplace", "index.json"));
         var bytes = MarketplaceJson.SerializeCatalogue(catalogue);
@@ -26,6 +27,11 @@ try
         var candidateRoot = ScopedPaths.Ordinary(Path.GetFullPath(args[2]), true);
         var before = ReadManifests(root);
         var after = ReadManifests(candidateRoot);
+        var beforeImages = ReadImages(root, before);
+        var afterImages = ReadImages(candidateRoot, after);
+        foreach (var (path, bytes) in beforeImages)
+            if (afterImages.TryGetValue(path, out var next) && bytes != next)
+                throw new InvalidDataException("Published images are immutable.");
         foreach (var (path, record) in before)
             if (after.TryGetValue(path, out var next) && !record.Bytes.AsSpan().SequenceEqual(next.Bytes))
                 throw new InvalidDataException("Published manifests are immutable; publish a new version instead.");
@@ -47,7 +53,7 @@ try
         }
         // A trusted list of every changed repository path prevents disguised source,
         // workflow or catalogue edits. Both author identity and exact scope are required.
-        if (!ChangedPaths().ToHashSet(StringComparer.Ordinal).SetEquals(changes.Select(pair => pair.Key)))
+        if (!ChangedPaths().ToHashSet(StringComparer.Ordinal).SetEquals(changes.Select(pair => pair.Key).Concat(afterImages.Keys.Except(beforeImages.Keys)).Concat(beforeImages.Keys.Except(afterImages.Keys))))
             throw new InvalidDataException("A marketplace submission may only change its declared manifest files.");
         _ = Catalogue(after);
         Console.WriteLine($"Validated {additions.Length} new versions and {deletions.Length} removals; awaiting maintainer review.");
@@ -95,6 +101,33 @@ static Dictionary<string, (MarketplaceManifest Manifest, byte[] Bytes)> ReadMani
     return result;
 }
 
+static Dictionary<string, string> ReadImages(string root, Dictionary<string, (MarketplaceManifest Manifest, byte[] Bytes)> manifests)
+{
+    var result = new Dictionary<string, string>(StringComparer.Ordinal);
+    foreach (var record in manifests.Values)
+        foreach (var image in record.Manifest.Images)
+        {
+            var file = ScopedPaths.Child(root, image.Path.Replace('/', Path.DirectorySeparatorChar));
+            ScopedPaths.Ordinary(file, true);
+            if (new FileInfo(file).Length != image.Bytes) throw new InvalidDataException("Image length mismatch.");
+            var bytes = File.ReadAllBytes(file); MarketplaceImages.Verify(image, bytes); result.Add(image.Path, image.Sha256);
+        }
+    var folder = ScopedPaths.Ordinary(Path.Combine(root, "marketplace", "images"));
+    if (Directory.Exists(folder))
+    {
+        var pending = new Stack<string>(); pending.Push(folder);
+        while (pending.TryPop(out var current))
+        {
+            ScopedPaths.Ordinary(current, true);
+            if (Path.GetRelativePath(folder, current).Split(Path.DirectorySeparatorChar).Length > 3) throw new InvalidDataException("Image directory too deep.");
+            foreach (var child in Directory.EnumerateDirectories(current)) { ScopedPaths.Ordinary(child, true); pending.Push(child); }
+            foreach (var file in Directory.EnumerateFiles(current))
+            { ScopedPaths.Ordinary(file, true); if (!result.ContainsKey(Path.GetRelativePath(root, file).Replace('\\', '/'))) throw new InvalidDataException("Undeclared image."); }
+        }
+    }
+    return result;
+}
+
 static MarketplaceCatalogue Catalogue(Dictionary<string, (MarketplaceManifest Manifest, byte[] Bytes)> files)
 {
     // Hash exact bytes, allowing harmless author JSON whitespace without changing content.
@@ -103,7 +136,7 @@ static MarketplaceCatalogue Catalogue(Dictionary<string, (MarketplaceManifest Ma
         var m = pair.Value.Manifest;
         return new MarketplaceEntry(m.Id, m.Version, m.Title, m.Author, m.Description, m.GameVersion,
             m.RequiredDlc, m.WorkshopCollectionId, pair.Key, MarketplaceJson.ComputeSha256(pair.Value.Bytes))
-            { ModCount = m.Mods.Count, ReleaseNotes = m.ReleaseNotes };
+            { ModCount = m.Mods.Count, ReleaseNotes = m.ReleaseNotes, Images = m.Images };
     }).ToArray();
     var result = new MarketplaceCatalogue(1, entries);
     _ = MarketplaceJson.SerializeCatalogue(result);

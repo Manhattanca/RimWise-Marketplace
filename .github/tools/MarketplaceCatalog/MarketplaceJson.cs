@@ -33,7 +33,7 @@ public static class MarketplaceJson
         return manifest with
         {
             RequiredDlc = Array.AsReadOnly(manifest.RequiredDlc.ToArray()),
-            Mods = Array.AsReadOnly(manifest.Mods.ToArray())
+            Mods = Array.AsReadOnly(manifest.Mods.ToArray()), Images = Array.AsReadOnly(manifest.Images.ToArray())
         };
     }
 
@@ -45,7 +45,7 @@ public static class MarketplaceJson
         {
             Entries = Array.AsReadOnly(catalogue.Entries.Select(e => e with
             {
-                RequiredDlc = Array.AsReadOnly(e.RequiredDlc.ToArray())
+                RequiredDlc = Array.AsReadOnly(e.RequiredDlc.ToArray()), Images = Array.AsReadOnly(e.Images.ToArray())
             }).ToArray())
         };
     }
@@ -53,6 +53,7 @@ public static class MarketplaceJson
     public static void ValidateManifest(MarketplaceManifest manifest)
     {
         ArgumentNullException.ThrowIfNull(manifest);
+        MarketplaceImages.Validate(manifest.Author, manifest.Id, manifest.Version, manifest.Images);
         Require(manifest.SchemaVersion == 1, "Unsupported marketplace manifest schemaVersion; expected 1.");
         Metadata(manifest.Id, manifest.Version, manifest.Title, manifest.Author, manifest.Description,
             manifest.GameVersion, manifest.RequiredDlc, manifest.WorkshopCollectionId);
@@ -122,6 +123,7 @@ public static class MarketplaceJson
             }
             writer.WriteEndArray();
             if (manifest.ReleaseNotes.Length > 0) writer.WriteString("releaseNotes", manifest.ReleaseNotes);
+            WriteImages(writer, manifest.Images);
             writer.WriteEndObject();
         }, MaximumManifestBytes);
     }
@@ -143,6 +145,7 @@ public static class MarketplaceJson
                 writer.WriteString("sha256", entry.Sha256);
                 if (entry.ModCount is { } count) writer.WriteNumber("modCount", count);
                 if (entry.ReleaseNotes.Length > 0) writer.WriteString("releaseNotes", entry.ReleaseNotes);
+                WriteImages(writer, entry.Images);
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
@@ -162,7 +165,7 @@ public static class MarketplaceJson
             entries.Add(new MarketplaceEntry(manifest.Id, manifest.Version, manifest.Title, manifest.Author,
                 manifest.Description, manifest.GameVersion, manifest.RequiredDlc, manifest.WorkshopCollectionId,
                 GetManifestPath(manifest.Author, manifest.Id, manifest.Version), ComputeSha256(bytes))
-                { ModCount = manifest.Mods.Count, ReleaseNotes = manifest.ReleaseNotes });
+                { ModCount = manifest.Mods.Count, ReleaseNotes = manifest.ReleaseNotes, Images = manifest.Images });
         }
         var catalogue = new MarketplaceCatalogue(1, Array.AsReadOnly(entries
             .OrderBy(e => e.Author, StringComparer.OrdinalIgnoreCase)
@@ -198,6 +201,7 @@ public static class MarketplaceJson
 
     internal static void ValidateEntry(MarketplaceEntry entry)
     {
+        MarketplaceImages.Validate(entry.Author, entry.Id, entry.Version, entry.Images);
         Require(entry.ModCount is null or > 0 and <= MaximumMods, "排序目录中的模组数无效。");
         Require(entry.ReleaseNotes is not null && entry.ReleaseNotes.Length <= 4000 &&
             entry.ReleaseNotes.All(c => !char.IsControl(c) || c is '\n' or '\r' or '\t'), "排序目录中的更新日志无效。");
@@ -220,7 +224,7 @@ public static class MarketplaceJson
             manifest.Title == entry.Title && manifest.Description == entry.Description && manifest.GameVersion == entry.GameVersion &&
             manifest.WorkshopCollectionId == entry.WorkshopCollectionId && manifest.RequiredDlc.SequenceEqual(entry.RequiredDlc) &&
             (entry.ModCount is null || entry.ModCount == manifest.Mods.Count) &&
-            (entry.ReleaseNotes.Length == 0 || entry.ReleaseNotes == manifest.ReleaseNotes),
+            (entry.ReleaseNotes.Length == 0 || entry.ReleaseNotes == manifest.ReleaseNotes) && entry.Images.SequenceEqual(manifest.Images),
             "Manifest identity or metadata does not match its catalogue entry.");
     }
 
@@ -264,6 +268,20 @@ public static class MarketplaceJson
         }
         else if (element.ValueKind == JsonValueKind.Array)
             foreach (var item in element.EnumerateArray()) CheckDuplicateProperties(item);
+    }
+
+    private static void WriteImages(Utf8JsonWriter writer, IReadOnlyList<MarketplaceImage> images)
+    {
+        if (images.Count == 0) return;
+        writer.WriteStartArray("images");
+        foreach (var image in images)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("path", image.Path); writer.WriteString("sha256", image.Sha256);
+            writer.WriteNumber("bytes", image.Bytes); writer.WriteNumber("width", image.Width); writer.WriteNumber("height", image.Height);
+            writer.WriteEndObject();
+        }
+        writer.WriteEndArray();
     }
 
     private static bool IsId(string? value) => value is { Length: > 0 and <= 64 } &&

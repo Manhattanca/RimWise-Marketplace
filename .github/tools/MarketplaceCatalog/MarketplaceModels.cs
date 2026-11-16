@@ -1,6 +1,8 @@
 namespace RimWise.Integration.Marketplace;
 
 public sealed record MarketplaceMod(string PackageId, string? WorkshopId);
+public sealed record MarketplaceImage(string Path, string Sha256, int Bytes, int Width, int Height);
+public sealed record MarketplaceImageUpload(MarketplaceImage Image, byte[] Content);
 
 /// <summary>Author is the GitHub login, not a display name. Mods preserve load order.</summary>
 public sealed record MarketplaceManifest(
@@ -10,6 +12,7 @@ public sealed record MarketplaceManifest(
     IReadOnlyList<MarketplaceMod> Mods)
 {
     public string ReleaseNotes { get; init; } = "";
+    public IReadOnlyList<MarketplaceImage> Images { get; init; } = [];
 }
 
 public sealed record MarketplaceEntry(
@@ -19,10 +22,12 @@ public sealed record MarketplaceEntry(
 {
     public int? ModCount { get; init; }
     public string ReleaseNotes { get; init; } = "";
+    public IReadOnlyList<MarketplaceImage> Images { get; init; } = [];
 }
 
 public sealed record MarketplaceCatalogue(int SchemaVersion, IReadOnlyList<MarketplaceEntry> Entries);
 public sealed record MarketplaceResult<T>(T Value, bool FromCache, string? Warning);
+public sealed record MarketplaceTransferProgress(long Received, long? Total);
 
 public sealed record GitHubDeviceCode(
     string DeviceCode, string UserCode, Uri VerificationUri, int ExpiresIn, int Interval)

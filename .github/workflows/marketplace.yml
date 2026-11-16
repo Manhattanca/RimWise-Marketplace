@@ -2,10 +2,10 @@ name: Marketplace catalogue
 
 on:
   pull_request:
-    paths: ['marketplace/manifests/**']
+    paths: ['marketplace/manifests/**', 'marketplace/images/**']
   push:
     branches: [main]
-    paths: ['marketplace/manifests/**']
+    paths: ['marketplace/manifests/**', 'marketplace/images/**']
   workflow_dispatch:
 
 permissions:
@@ -40,7 +40,7 @@ jobs:
           git -C candidate diff --name-only -z "--output=$paths" $env:BASE_SHA $env:HEAD_SHA --
           if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect changed paths.' }
           "MARKETPLACE_CHANGED_PATHS_FILE=$paths" >> $env:GITHUB_ENV
-      - name: Validate data with the trusted base-branch tool
+      - name: Validate data with the trusted base-branch tool (base ${{ github.event.pull_request.base.sha }})
         shell: pwsh
         env:
           MARKETPLACE_AUTHOR: ${{ github.event.pull_request.user.login }}
