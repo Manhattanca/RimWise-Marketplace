@@ -1,4 +1,4 @@
-using RimWise.Integration.Marketplace;
+﻿using RimWise.Integration.Marketplace;
 using RimWise.Integration.Safety;
 
 // Run this trusted tool from the base branch in CI. Author branches supply JSON
@@ -27,21 +27,30 @@ try
         var before = ReadManifests(root);
         var after = ReadManifests(candidateRoot);
         foreach (var (path, record) in before)
-            if (!after.TryGetValue(path, out var next) || !record.Bytes.AsSpan().SequenceEqual(next.Bytes))
+            if (after.TryGetValue(path, out var next) && !record.Bytes.AsSpan().SequenceEqual(next.Bytes))
                 throw new InvalidDataException("Published manifests are immutable; publish a new version instead.");
         var additions = after.Where(pair => !before.ContainsKey(pair.Key)).ToArray();
-        if (additions.Length == 0) throw new InvalidDataException("Submission must add a new manifest version.");
+        var deletions = before.Where(pair => !after.ContainsKey(pair.Key)).ToArray();
+        if (additions.Length == 0 && deletions.Length == 0 || additions.Length > 0 && deletions.Length > 0)
+            throw new InvalidDataException("Submit new versions or request removal separately.");
         var actor = Environment.GetEnvironmentVariable("MARKETPLACE_AUTHOR");
         if (string.IsNullOrWhiteSpace(actor)) throw new InvalidDataException("Trusted PR author identity is required.");
-        foreach (var addition in additions)
-            if (!addition.Value.Manifest.Author.Equals(actor, StringComparison.OrdinalIgnoreCase))
+        var changes = additions.Concat(deletions).ToArray();
+        foreach (var change in changes)
+            if (!change.Value.Manifest.Author.Equals(actor, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Manifest author must match the submitting GitHub account.");
-        // Compare full repository trees: a publication request may add manifests only.
-        foreach (var file in ChangedPaths())
-            if (!additions.Any(pair => pair.Key == file))
-                throw new InvalidDataException("A marketplace submission may only add new manifest JSON files.");
+        if (deletions.Length > 0)
+        {
+            var id = deletions[0].Value.Manifest.Id;
+            if (deletions.Any(pair => pair.Value.Manifest.Id != id) || after.Values.Any(record => record.Manifest.Id == id))
+                throw new InvalidDataException("Removal must cover all versions of exactly one order.");
+        }
+        // A trusted list of every changed repository path prevents disguised source,
+        // workflow or catalogue edits. Both author identity and exact scope are required.
+        if (!ChangedPaths().ToHashSet(StringComparer.Ordinal).SetEquals(changes.Select(pair => pair.Key)))
+            throw new InvalidDataException("A marketplace submission may only change its declared manifest files.");
         _ = Catalogue(after);
-        Console.WriteLine($"Validated {additions.Length} new versions; awaiting maintainer review.");
+        Console.WriteLine($"Validated {additions.Length} new versions and {deletions.Length} removals; awaiting maintainer review.");
     }
     return 0;
 }
