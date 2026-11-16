@@ -1,0 +1,83 @@
+name: Marketplace catalogue
+
+on:
+  pull_request:
+    paths: ['marketplace/manifests/**']
+  push:
+    branches: [main]
+    paths: ['marketplace/manifests/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-submission:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: List changed paths without executing submitted source
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          $paths = Join-Path $env:RUNNER_TEMP 'marketplace-changes.bin'
+          git -C candidate diff --name-only -z "--output=$paths" $env:BASE_SHA $env:HEAD_SHA --
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect changed paths.' }
+          "MARKETPLACE_CHANGED_PATHS_FILE=$paths" >> $env:GITHUB_ENV
+      - name: Validate data with the trusted base-branch tool
+        shell: pwsh
+        env:
+          MARKETPLACE_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          dotnet restore trusted/.github/tools/MarketplaceCatalog --source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE -ne 0) { throw 'Restore failed.' }
+          dotnet run --project trusted/.github/tools/MarketplaceCatalog --no-restore -- validate-submission trusted candidate
+          if ($LASTEXITCODE -ne 0) { throw 'Submission rejected.' }
+
+  update-index:
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: marketplace-index
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build reviewed catalogue
+        shell: pwsh
+        run: |
+          dotnet restore .github/tools/MarketplaceCatalog --source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE -ne 0) { throw 'Restore failed.' }
+          dotnet run --project .github/tools/MarketplaceCatalog --no-restore -- build .
+          if ($LASTEXITCODE -ne 0) { throw 'Catalogue validation failed.' }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- marketplace/index.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) { exit 0 }
+          git commit -m 'Update reviewed marketplace catalogue'
+          if ($LASTEXITCODE -ne 0) { throw 'Catalogue commit failed.' }
+          git push origin HEAD:main
+          if ($LASTEXITCODE -ne 0) { throw 'Catalogue push failed; rerun against current main.' }
